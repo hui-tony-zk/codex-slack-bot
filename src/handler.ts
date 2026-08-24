@@ -1,5 +1,6 @@
-import { decodeSessionId, encodeSessionId, getProviderModel, runAgentQuery } from "./agents.js";
+import { createTopLevelCodexTask, decodeSessionId, encodeSessionId, getProviderModel, runAgentQuery, steerAgentQuery } from "./agents.js";
 import type { AgentProvider, BuiltPrompt, ToolTrace } from "./agents.js";
+import { extractCodexTaskRequests } from "./codex-task-directive.js";
 import { AGENT_PROVIDER, DEFAULT_CWD, MAX_ERROR_DETAIL_CHARS } from "./config.js";
 import { handleCommand } from "./commands.js";
 import { formatElapsedMs, formatResultBlocks } from "./formatting.js";
@@ -14,16 +15,29 @@ async function buildPrompt(
   event: BotEvent,
   text: string,
   threadTs: string,
-  hasSession: boolean
+  botUserId: string | undefined,
+  includeThreadContext = true,
 ): Promise<BuiltPrompt> {
-  // Download supported attachments. Images are passed as model inputs; videos remain local for tool-based processing.
+  // Images are model inputs; video and audio remain local for tool-based processing.
   const attachmentNotes: string[] = [];
   let imagePaths: string[] = [];
-  if (event.files?.length) {
+  let audioPaths: string[] = [];
+  let threadContext: string | null = null;
+  let threadFiles = [] as NonNullable<BotEvent["files"]>;
+  if (includeThreadContext && event.thread_ts) {
+    const context = await fetchThreadContext(app, event.channel, threadTs, event.ts, botUserId);
+    threadContext = context.text;
+    threadFiles = context.files;
+  }
+
+  const files = [...threadFiles, ...(event.files || [])]
+    .filter((file, index, all) => all.findIndex((candidate) => candidate.id === file.id) === index);
+  if (files.length) {
     const botToken = process.env.SLACK_BOT_TOKEN;
     if (botToken) {
-      const downloaded = await downloadSlackFiles(event.files, botToken);
+      const downloaded = await downloadSlackFiles(files, botToken);
       imagePaths = downloaded.imagePaths;
+      audioPaths = downloaded.audioPaths;
       if (imagePaths.length > 0) {
         attachmentNotes.push(`The user attached ${imagePaths.length} image(s):\n${imagePaths.map((p) => `- ${p}`).join("\n")}`);
         logThread(threadTs, "Downloaded image attachments", { count: imagePaths.length, paths: imagePaths });
@@ -37,6 +51,12 @@ async function buildPrompt(
           paths: downloaded.videoPaths,
         });
       }
+      if (audioPaths.length > 0) {
+        attachmentNotes.push(
+          `The user attached ${audioPaths.length} audio file(s), downloaded to local paths:\n${audioPaths.map((p) => `- ${p}`).join("\n")}\nChoose how to inspect or process each audio file based on the user's request.`,
+        );
+        logThread(threadTs, "Downloaded audio attachments", { count: audioPaths.length, paths: audioPaths });
+      }
     }
   }
   const attachmentNote = attachmentNotes.length ? `\n\n${attachmentNotes.join("\n\n")}` : "";
@@ -44,15 +64,15 @@ async function buildPrompt(
 
   // Fetch missed thread messages
   let prompt = requestText + attachmentNote;
-  if (event.thread_ts) {
-    const threadContext = await fetchThreadContext(app, event.channel, threadTs, event.ts, hasSession);
-    if (threadContext) {
-      prompt = `${threadContext}\n\n---\n\nUser's request: ${requestText}${attachmentNote}`;
-      logThread(threadTs, "Prepended thread context to prompt", { hasSession });
-    }
+  if (threadContext) {
+    prompt = `${threadContext}\n\n---\n\nUser's request: ${requestText}${attachmentNote}`;
+    logThread(threadTs, "Prepended thread context to prompt", {
+      threadFileCount: threadFiles.length,
+      botUserId: botUserId || null,
+    });
   }
 
-  return { text: prompt, imagePaths };
+  return { text: prompt, imagePaths, audioPaths };
 }
 
 export function createMessageHandler(app: SlackApp, state: StateStore) {
@@ -68,6 +88,8 @@ export function createMessageHandler(app: SlackApp, state: StateStore) {
     const threadTs = event.thread_ts || event.ts;
     const text = stripMention(event.text);
     const user = event.user;
+    const botUserId = body?.authorizations?.find((authorization) => authorization.user_id)?.user_id
+      || event.text.match(/<@([A-Z0-9]+)>/)?.[1];
 
     logThread(threadTs, "Incoming user message", {
       user,
@@ -90,6 +112,30 @@ export function createMessageHandler(app: SlackApp, state: StateStore) {
     const provider = AGENT_PROVIDER as AgentProvider;
     const existingSessionId = decodeSessionId(provider, storedSessionId);
     const providerModel = getProviderModel(provider);
+
+    if (provider === "codex" && state.activeQueries.has(threadTs)) {
+      try {
+        const prompt = await buildPrompt(app, event, text, threadTs, botUserId);
+        const steered = await steerAgentQuery(threadTs, prompt);
+        if (!steered) throw new Error("The active Codex turn ended before the follow-up could be steered");
+        state.updateActiveQuery(threadTs, {
+          phase: "steered",
+          text: `${state.activeQueries.get(threadTs)?.text || ""}\nFollow-up: ${text}`.trim(),
+          lastProgressAt: new Date().toISOString(),
+        });
+        await say({ text: ":leftwards_arrow_with_hook: Added to the active task.", thread_ts: threadTs });
+        return;
+      } catch (err) {
+        writeLog("error", {
+          scope: "codex-steer",
+          threadTs,
+          message: "Failed to steer active Codex turn",
+          error: serializeError(err),
+        });
+        await say({ text: `:x: Could not add that follow-up to the active task: ${(err as Error).message}`, thread_ts: threadTs });
+        return;
+      }
+    }
 
     logThread(threadTs, `Starting ${provider} query`, { cwd, model: providerModel || null, sessionId: existingSessionId || null });
     state.setActiveQuery(threadTs, {
@@ -123,7 +169,7 @@ export function createMessageHandler(app: SlackApp, state: StateStore) {
     let currentTool: ToolTrace | null = null;
 
     try {
-      const prompt = await buildPrompt(app, event, text, threadTs, !!existingSessionId);
+      const prompt = await buildPrompt(app, event, text, threadTs, botUserId);
       const onSession = (newSessionId: string) => {
         sessionId = newSessionId;
         state.updateActiveQuery(threadTs, { sessionId, phase: "initialized" });
@@ -189,11 +235,33 @@ export function createMessageHandler(app: SlackApp, state: StateStore) {
       await setTypingStatus(app, event.channel, threadTs, "");
       await progress.stop(`Done (${formatElapsedMs(elapsedMs)})`);
 
-      // Extract and upload any attached files before posting the text
-      const attachmentPaths = extractAttachmentPaths(resultText);
-      const cleanedResult = stripAttachmentLines(resultText);
+      // Execute hidden top-level task requests before posting the visible answer.
+      const taskDirectives = extractCodexTaskRequests(resultText);
+      const taskNotices: string[] = [];
+      for (const request of taskDirectives.requests) {
+        try {
+          const created = await createTopLevelCodexTask({
+            ...request,
+            sourceThreadTs: threadTs,
+          });
+          taskNotices.push(`Created Codex task \`${created.threadId}\` in \`${request.cwd}\`; it is running and visible in the Codex UI.`);
+        } catch (error) {
+          writeLog("error", {
+            scope: "top-level-codex-task",
+            threadTs,
+            message: "Could not create requested top-level Codex task",
+            cwd: request.cwd,
+            error: serializeError(error),
+          });
+          taskNotices.push(`:x: Could not create the requested Codex task: ${(error as Error).message}`);
+        }
+      }
 
-      const fallbackText = cleanedResult || "(no output)";
+      // Extract and upload any attached files before posting the text.
+      const attachmentPaths = extractAttachmentPaths(taskDirectives.text);
+      const cleanedResult = stripAttachmentLines(taskDirectives.text);
+
+      const fallbackText = [cleanedResult, ...taskNotices].filter(Boolean).join("\n\n") || "(no output)";
       await say({
         text: fallbackText,
         blocks: formatResultBlocks(cleanedResult),

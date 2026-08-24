@@ -50,6 +50,7 @@ export type BotEvent = {
 export type BotEventEnvelope = {
   team_id?: string;
   enterprise_id?: string;
+  authorizations?: Array<{ user_id?: string }>;
 };
 
 export type SayArgs = {
@@ -84,7 +85,13 @@ export type SlackApp = {
     };
     conversations: {
       replies(args: { channel: string; ts: string; limit?: number }): Promise<{
-        messages?: Array<{ user?: string; bot_id?: string; text?: string; ts: string }>;
+        messages?: Array<{
+          user?: string;
+          bot_id?: string;
+          text?: string;
+          ts: string;
+          files?: SlackFile[];
+        }>;
       }>;
     };
     files: {

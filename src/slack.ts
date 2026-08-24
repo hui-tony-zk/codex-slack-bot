@@ -12,23 +12,32 @@ mkdirSync(ATTACHMENTS_DIR, { recursive: true });
 
 const IMAGE_TYPES = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"]);
 const VIDEO_TYPES = new Set(["mp4", "mov", "m4v", "webm", "avi", "mkv", "mpg", "mpeg", "qt"]);
+const AUDIO_TYPES = new Set(["mp3", "wav", "m4a", "aac", "flac", "ogg", "opus", "aif", "aiff"]);
 const MIME_EXTENSIONS: Record<string, string> = {
   "image/jpeg": "jpg",
   "video/quicktime": "mov",
   "video/x-matroska": "mkv",
   "video/x-msvideo": "avi",
+  "audio/mp4": "m4a",
+  "audio/mpeg": "mp3",
+  "audio/wav": "wav",
+  "audio/x-wav": "wav",
+  "audio/aac": "aac",
+  "audio/flac": "flac",
+  "audio/ogg": "ogg",
 };
 
 export type DownloadedSlackFiles = {
   imagePaths: string[];
   videoPaths: string[];
+  audioPaths: string[];
 };
 
 export function stripMention(text: string): string {
   return text.replace(/<@[A-Z0-9]+>/g, "").trim();
 }
 
-function getAttachmentType(file: SlackFile): { ext: string; kind: "image" | "video" } | null {
+export function classifySlackFile(file: SlackFile): { ext: string; kind: "image" | "video" | "audio" } | null {
   const rawExt = file.filetype || file.name?.split(".").pop() || "";
   const safeExt = rawExt.toLowerCase().replace(/[^a-z0-9]/g, "");
   const mime = file.mimetype?.toLowerCase() || "";
@@ -36,15 +45,26 @@ function getAttachmentType(file: SlackFile): { ext: string; kind: "image" | "vid
 
   if (mime.startsWith("image/") || IMAGE_TYPES.has(ext)) return { ext, kind: "image" };
   if (mime.startsWith("video/") || VIDEO_TYPES.has(ext)) return { ext, kind: "video" };
+  if (mime.startsWith("audio/") || AUDIO_TYPES.has(ext)) return { ext, kind: "audio" };
   return null;
 }
 
 export async function downloadSlackFiles(files: SlackFile[], botToken: string): Promise<DownloadedSlackFiles> {
-  const downloaded: DownloadedSlackFiles = { imagePaths: [], videoPaths: [] };
+  const downloaded: DownloadedSlackFiles = { imagePaths: [], videoPaths: [], audioPaths: [] };
   for (const file of files) {
     if (!file.url_private) continue;
-    const attachmentType = getAttachmentType(file);
-    if (!attachmentType) continue;
+    const attachmentType = classifySlackFile(file);
+    if (!attachmentType) {
+      writeLog("info", {
+        scope: "attachment",
+        message: "Skipped unsupported Slack attachment",
+        fileId: file.id,
+        name: file.name || null,
+        mimetype: file.mimetype || null,
+        filetype: file.filetype || null,
+      });
+      continue;
+    }
     const { ext, kind } = attachmentType;
     const filename = `${file.id}.${ext}`;
     const filepath = join(ATTACHMENTS_DIR, filename);
@@ -58,7 +78,10 @@ export async function downloadSlackFiles(files: SlackFile[], botToken: string): 
       }
       if (!resp.body) throw new Error("Download response had no body");
       await pipeline(Readable.fromWeb(resp.body as any), createWriteStream(filepath));
-      downloaded[kind === "image" ? "imagePaths" : "videoPaths"].push(filepath);
+      const destination = kind === "image" ? downloaded.imagePaths
+        : kind === "video" ? downloaded.videoPaths
+        : downloaded.audioPaths;
+      destination.push(filepath);
     } catch (err) {
       try {
         unlinkSync(filepath);
@@ -74,43 +97,51 @@ export async function fetchThreadContext(
   channel: string,
   threadTs: string,
   currentTs: string,
-  hasSession: boolean
-): Promise<string | null> {
+  botUserId: string | undefined,
+): Promise<{ text: string | null; files: SlackFile[] }> {
   try {
     const result = await app.client.conversations.replies({
       channel,
       ts: threadTs,
       limit: 50,
     });
-    const allMessages = (result.messages || []).filter((m) => m.ts !== currentTs);
-
-    // Find the last bot message and only take messages after it
-    let lastBotIndex = -1;
-    for (let i = allMessages.length - 1; i >= 0; i--) {
-      if (allMessages[i].bot_id) {
-        lastBotIndex = i;
-        break;
+    const priorMessages = (result.messages || []).filter((message) => message.ts < currentTs);
+    let previousTagIndex = -1;
+    if (botUserId) {
+      for (let index = priorMessages.length - 1; index >= 0; index -= 1) {
+        const message = priorMessages[index];
+        if (!message.bot_id && message.text?.includes(`<@${botUserId}>`)) {
+          previousTagIndex = index;
+          break;
+        }
       }
     }
-    const relevantMessages = allMessages.slice(lastBotIndex + 1);
+    const relevantMessages = previousTagIndex >= 0
+      ? priorMessages.slice(previousTagIndex + 1)
+      : priorMessages;
+    const files = relevantMessages
+      .filter((message) => !message.bot_id)
+      .flatMap((message) => message.files || []);
 
     const lines = relevantMessages
       .filter((m) => !m.bot_id)
-      .map((m) => `<${m.user || "unknown"}>: ${stripMention(m.text || "")}`)
-      .filter((line) => line.trim());
-    if (lines.length === 0) return null;
-
-    const label = hasSession
-      ? "New messages in the thread since your last reply:"
-      : "Here is the Slack thread context you were tagged into:";
-    return `${label}\n\n${lines.join("\n")}`;
+      .map((m) => {
+        const messageText = stripMention(m.text || "");
+        const fileText = (m.files || []).map((file) => `[attached file: ${file.name || file.id}]`).join(" ");
+        return `<${m.user || "unknown"}>: ${[messageText, fileText].filter(Boolean).join(" ")}`;
+      })
+      .filter((line) => !line.endsWith(": "));
+    const text = lines.length > 0
+      ? `Slack thread context before this request:\n\n${lines.join("\n")}`
+      : null;
+    return { text, files };
   } catch (err) {
     writeLog("error", {
       scope: "thread-context",
       message: "Failed to fetch thread history",
       error: (err as Error).message,
     });
-    return null;
+    return { text: null, files: [] };
   }
 }
 
@@ -192,8 +223,15 @@ function taskChunk(tool: ToolTrace, status: "in_progress" | "complete" | "error"
     id: tool.id,
     title: truncateTaskText(tool.name, 80),
     status,
-    ...(tool.detail ? { details: truncateTaskText(tool.detail, 500) } : {}),
+    ...(tool.detail ? { details: truncateTaskText(tool.detail, 160) } : {}),
   };
+}
+
+function isExpiredSlackStreamError(error: unknown): boolean {
+  const source = error as { data?: { error?: unknown }; code?: unknown };
+  return source?.data?.error === "message_not_in_streaming_state"
+    || source?.code === "message_not_in_streaming_state"
+    || (error instanceof Error && error.message.includes("message_not_in_streaming_state"));
 }
 
 export type NativeTaskProgress = {
@@ -215,10 +253,11 @@ export async function startNativeTaskProgress(
   let stopped = false;
   let queue = Promise.resolve();
   let lastTask: { id: string; title: string } | null = null;
+  let recoveryAttempted = false;
   const displayIds = new Map<string, string>();
   const lastTaskState = new Map<string, string>();
 
-  try {
+  const startStream = async (): Promise<string> => {
     const response = await app.client.chat.startStream({
       channel,
       thread_ts: threadTs,
@@ -227,8 +266,47 @@ export async function startNativeTaskProgress(
       recipient_user_id: recipientUserId,
       ...(recipientTeamId ? { recipient_team_id: recipientTeamId } : {}),
     });
-    streamTs = response.ts || null;
-    if (!streamTs) throw new Error("chat.startStream returned no message timestamp");
+    if (!response.ts) throw new Error("chat.startStream returned no message timestamp");
+    return response.ts;
+  };
+
+  const appendChunks = async (chunks: SlackStreamChunk[]): Promise<void> => {
+    if (!streamTs) return;
+    try {
+      await app.client.chat.appendStream({ channel, ts: streamTs, chunks });
+      return;
+    } catch (err) {
+      if (!recoveryAttempted && isExpiredSlackStreamError(err)) {
+        recoveryAttempted = true;
+        const expiredTs = streamTs;
+        try {
+          streamTs = await startStream();
+          await app.client.chat.appendStream({ channel, ts: streamTs, chunks });
+          writeLog("info", {
+            scope: "native-task-progress",
+            threadTs,
+            message: "Restarted expired native task progress stream",
+            expiredTs,
+            replacementTs: streamTs,
+          });
+          return;
+        } catch (recoveryError) {
+          writeLog("error", {
+            scope: "native-task-progress",
+            threadTs,
+            message: "Failed to restart expired native task progress stream",
+            expiredTs,
+            error: (recoveryError as Error).message,
+          });
+          throw recoveryError;
+        }
+      }
+      throw err;
+    }
+  };
+
+  try {
+    streamTs = await startStream();
   } catch (err) {
     writeLog("error", {
       scope: "native-task-progress",
@@ -239,7 +317,9 @@ export async function startNativeTaskProgress(
   }
 
   return {
-    ts: streamTs,
+    get ts() {
+      return streamTs;
+    },
     update(tool, status) {
       if (!streamTs || stopped) return;
       let displayId = displayIds.get(tool.id);
@@ -253,12 +333,7 @@ export async function startNativeTaskProgress(
       lastTaskState.set(displayId, signature);
       lastTask = { id: displayId, title: displayTool.name };
       queue = queue
-        .then(() => app.client.chat.appendStream({
-          channel,
-          ts: streamTs as string,
-          chunks: [taskChunk(displayTool, status)],
-        }))
-        .then(() => undefined)
+        .then(() => appendChunks([taskChunk(displayTool, status)]))
         .catch((err) => {
           writeLog("error", {
             scope: "native-task-progress",
@@ -282,12 +357,7 @@ export async function startNativeTaskProgress(
         detail: "",
       };
       queue = queue
-        .then(() => app.client.chat.appendStream({
-          channel,
-          ts: streamTs as string,
-          chunks: [taskChunk(messageTask, "complete")],
-        }))
-        .then(() => undefined)
+        .then(() => appendChunks([taskChunk(messageTask, "complete")]))
         .catch((err) => {
           writeLog("error", {
             scope: "native-task-progress",

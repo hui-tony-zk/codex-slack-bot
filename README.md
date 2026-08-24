@@ -1,6 +1,6 @@
-# Agent Slack Bot
+# Codex Slack Bot
 
-Slack agent that runs Codex or Claude Code sessions. Codex via the [Codex SDK](https://github.com/openai/codex/tree/main/sdk/typescript) is the default; Claude remains available via the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk). Open it from Slack's agent entry point, DM it, or @mention it in threads.
+Slack agent built around Codex sessions. Claude remains available as an experimental, unverified provider through the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk). Open it from Slack's agent entry point, DM it, or @mention it in threads.
 
 ## Setup
 
@@ -35,7 +35,7 @@ Import [`manifest.json`](./manifest.json) into the Slack app configuration, crea
 - **Native Slack agent** — available from Slack's agent entry point and Messages tab
 - **DM or @mention** — responds in agent DMs and when tagged in channel threads
 - **Thread context** — fetches messages since last bot reply when tagged mid-thread
-- **Provider switching** — set `AGENT_PROVIDER=codex` or `AGENT_PROVIDER=claude`
+- **Experimental provider switching** — Codex is supported; `AGENT_PROVIDER=claude` remains available but unverified
 - **Session persistence** — resumes sessions across messages in the same thread; survives bot restarts
 - **Image attachments** — downloads images from Slack and passes them to the active provider
 - **Video attachments** — downloads videos locally so the agent can choose request-specific processing
