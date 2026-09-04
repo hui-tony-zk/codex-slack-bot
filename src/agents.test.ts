@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { isChannelUserAllowed, parseChannelUserAllowlist } from "./access-control.js";
 import { shouldRetryCodexTurn } from "./agents.js";
 import { extractCodexTaskRequests } from "./codex-task-directive.js";
 import { serializeError } from "./logger.js";
@@ -9,6 +10,15 @@ import type { SlackApp, SlackStreamChunk } from "./types.js";
 const disconnect = new Error(
   "stream disconnected before completion: websocket closed by server before response.completed",
 );
+
+test("restricts configured channels to explicitly allowed users", () => {
+  const allowlist = parseChannelUserAllowlist("C_MINIMAX:U_TONY,C_MINIMAX:U_BACKUP,C_OTHER:U_OTHER");
+
+  assert.equal(isChannelUserAllowed("C_MINIMAX", "U_TONY", allowlist), true);
+  assert.equal(isChannelUserAllowed("C_MINIMAX", "U_BACKUP", allowlist), true);
+  assert.equal(isChannelUserAllowed("C_MINIMAX", "U_SOMEONE_ELSE", allowlist), false);
+  assert.equal(isChannelUserAllowed("C_UNRESTRICTED", "U_SOMEONE_ELSE", allowlist), true);
+});
 
 test("retries a first-attempt Codex disconnect when no side-effect events were emitted", () => {
   assert.equal(shouldRetryCodexTurn(disconnect, 1, 0), true);
@@ -65,6 +75,13 @@ test("recognizes Slack voice notes as inbound audio", () => {
   assert.deepEqual(
     classifySlackFile({ id: "F123", name: "audio_message.m4a", mimetype: "audio/mp4" }),
     { ext: "m4a", kind: "audio" },
+  );
+});
+
+test("recognizes Slack PDF attachments as inbound documents", () => {
+  assert.deepEqual(
+    classifySlackFile({ id: "F456", name: "billing-guide.pdf", mimetype: "application/pdf" }),
+    { ext: "pdf", kind: "document" },
   );
 });
 

@@ -13,8 +13,10 @@ mkdirSync(ATTACHMENTS_DIR, { recursive: true });
 const IMAGE_TYPES = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"]);
 const VIDEO_TYPES = new Set(["mp4", "mov", "m4v", "webm", "avi", "mkv", "mpg", "mpeg", "qt"]);
 const AUDIO_TYPES = new Set(["mp3", "wav", "m4a", "aac", "flac", "ogg", "opus", "aif", "aiff"]);
+const DOCUMENT_TYPES = new Set(["pdf"]);
 const MIME_EXTENSIONS: Record<string, string> = {
   "image/jpeg": "jpg",
+  "application/pdf": "pdf",
   "video/quicktime": "mov",
   "video/x-matroska": "mkv",
   "video/x-msvideo": "avi",
@@ -31,13 +33,14 @@ export type DownloadedSlackFiles = {
   imagePaths: string[];
   videoPaths: string[];
   audioPaths: string[];
+  documentPaths: string[];
 };
 
 export function stripMention(text: string): string {
   return text.replace(/<@[A-Z0-9]+>/g, "").trim();
 }
 
-export function classifySlackFile(file: SlackFile): { ext: string; kind: "image" | "video" | "audio" } | null {
+export function classifySlackFile(file: SlackFile): { ext: string; kind: "image" | "video" | "audio" | "document" } | null {
   const rawExt = file.filetype || file.name?.split(".").pop() || "";
   const safeExt = rawExt.toLowerCase().replace(/[^a-z0-9]/g, "");
   const mime = file.mimetype?.toLowerCase() || "";
@@ -46,11 +49,12 @@ export function classifySlackFile(file: SlackFile): { ext: string; kind: "image"
   if (mime.startsWith("image/") || IMAGE_TYPES.has(ext)) return { ext, kind: "image" };
   if (mime.startsWith("video/") || VIDEO_TYPES.has(ext)) return { ext, kind: "video" };
   if (mime.startsWith("audio/") || AUDIO_TYPES.has(ext)) return { ext, kind: "audio" };
+  if (mime === "application/pdf" || DOCUMENT_TYPES.has(ext)) return { ext, kind: "document" };
   return null;
 }
 
 export async function downloadSlackFiles(files: SlackFile[], botToken: string): Promise<DownloadedSlackFiles> {
-  const downloaded: DownloadedSlackFiles = { imagePaths: [], videoPaths: [], audioPaths: [] };
+  const downloaded: DownloadedSlackFiles = { imagePaths: [], videoPaths: [], audioPaths: [], documentPaths: [] };
   for (const file of files) {
     if (!file.url_private) continue;
     const attachmentType = classifySlackFile(file);
@@ -80,7 +84,8 @@ export async function downloadSlackFiles(files: SlackFile[], botToken: string): 
       await pipeline(Readable.fromWeb(resp.body as any), createWriteStream(filepath));
       const destination = kind === "image" ? downloaded.imagePaths
         : kind === "video" ? downloaded.videoPaths
-        : downloaded.audioPaths;
+        : kind === "audio" ? downloaded.audioPaths
+        : downloaded.documentPaths;
       destination.push(filepath);
     } catch (err) {
       try {

@@ -148,19 +148,15 @@ export class CodexAppServerClient {
 
   async openThread(args: {
     existingThreadId?: string;
-    model: string;
     cwd: string;
     approvalPolicy: string;
     sandbox: string;
-    effort?: string;
   }): Promise<string> {
     await this.start();
     const params = {
-      model: args.model,
       cwd: args.cwd,
       approvalPolicy: args.approvalPolicy,
       sandbox: args.sandbox,
-      config: args.effort ? { model_reasoning_effort: args.effort } : undefined,
     };
     const response = args.existingThreadId
       ? await this.request<any>("thread/resume", { threadId: args.existingThreadId, ...params })

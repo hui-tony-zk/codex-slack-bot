@@ -2,7 +2,7 @@ import "dotenv/config";
 import bolt from "@slack/bolt";
 import { readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { AGENT_PROVIDER, CLAUDE_MODEL, DEFAULT_CWD, DEFAULT_MODEL, PATHS } from "./config.js";
+import { AGENT_PROVIDER, CLAUDE_MODEL, DEFAULT_CWD, PATHS } from "./config.js";
 import { createMessageHandler } from "./handler.js";
 import { removeLegacyRuntimeLog, writeLog } from "./logger.js";
 import { createStateStore } from "./state.js";
@@ -120,7 +120,7 @@ async function main(): Promise<void> {
     message: "Agent Slack bot started",
     defaultCwd: DEFAULT_CWD,
     provider: AGENT_PROVIDER,
-    model: AGENT_PROVIDER === "claude" ? CLAUDE_MODEL || null : DEFAULT_MODEL,
+    model: AGENT_PROVIDER === "claude" ? CLAUDE_MODEL || null : null,
   });
 }
 

@@ -20,15 +20,16 @@ Import [`manifest.json`](./manifest.json) into the Slack app configuration, crea
 |----------|-------------|
 | `SLACK_BOT_TOKEN` | `xoxb-...` from OAuth & Permissions |
 | `SLACK_APP_TOKEN` | `xapp-...` from App-Level Tokens (needs `connections:write`) |
+| `CHANNEL_USER_ALLOWLIST` | Optional comma-separated `channel:user` pairs; configured channels silently ignore other users |
 | `DEFAULT_CWD` | Working directory for agent sessions |
 | `AGENT_PROVIDER` | `codex` or `claude` (default: `codex`) |
-| `DEFAULT_MODEL` / `CODEX_MODEL` | Codex model (default: `gpt-5.5`) |
 | `CLAUDE_MODEL` | Optional Claude model override when `AGENT_PROVIDER=claude` |
 | `MAX_TURNS` | Claude max turns per request (default: 50) |
-| `CODEX_MODEL_REASONING_EFFORT` | Codex reasoning effort: `minimal`, `low`, `medium`, `high`, or `xhigh` (default: `high`) |
 | `CODEX_SANDBOX_MODE` | Optional sandbox mode (default: `danger-full-access`) |
 | `CODEX_APPROVAL_POLICY` | Optional approval policy (default: `never`) |
 | `CODEX_PATH` | Optional Codex CLI override; unset uses the CLI runtime bundled with `@openai/codex-sdk` |
+
+Codex model selection and reasoning effort are left unset so the runtime uses the recommended defaults available to the signed-in account.
 
 ## Features
 
@@ -39,6 +40,7 @@ Import [`manifest.json`](./manifest.json) into the Slack app configuration, crea
 - **Session persistence** — resumes sessions across messages in the same thread; survives bot restarts
 - **Image attachments** — downloads images from Slack and passes them to the active provider
 - **Video attachments** — downloads videos locally so the agent can choose request-specific processing
+- **PDF attachments** — downloads PDFs locally so the agent can inspect and parse them with its document tools
 - **File delivery** — uploads agent-produced images, PDFs, audio, and videos back into the Slack thread
 - **Progress tracking** — renders tool execution as native Slack plan/task updates
 - **Typing indicator** — native Slack status via `assistant.threads.setStatus`

@@ -1,8 +1,8 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { ApprovalMode, ModelReasoningEffort, SandboxMode, ThreadItem } from "@openai/codex-sdk";
+import type { ApprovalMode, SandboxMode, ThreadItem } from "@openai/codex-sdk";
 import { codexAppServer } from "./codex-app-server.js";
 import type { AppServerThreadItem, CodexUserInput } from "./codex-app-server.js";
-import { CLAUDE_MODEL, CODEX_MODEL_REASONING_EFFORT, DEFAULT_MODEL, MAX_TURNS } from "./config.js";
+import { CLAUDE_MODEL, MAX_TURNS } from "./config.js";
 import { formatToolDetail } from "./formatting.js";
 import { logThread, serializeError, writeLog } from "./logger.js";
 import { SYSTEM_PROMPT } from "./prompt.js";
@@ -35,7 +35,6 @@ const CODEX_SESSION_PREFIX = "codex:";
 const CLAUDE_SESSION_PREFIX = "claude:";
 const VALID_SANDBOX_MODES = new Set<SandboxMode>(["read-only", "workspace-write", "danger-full-access"]);
 const VALID_APPROVAL_MODES = new Set<ApprovalMode>(["never", "on-request", "on-failure", "untrusted"]);
-const VALID_REASONING_EFFORTS = new Set<ModelReasoningEffort>(["minimal", "low", "medium", "high", "xhigh"]);
 const MAX_CODEX_ATTEMPTS = 2;
 const CODEX_RETRY_DELAY_MS = 1_000;
 const RETRYABLE_CODEX_DISCONNECT = /stream disconnected before completion|websocket closed by server before response\.completed/i;
@@ -69,7 +68,7 @@ export function decodeSessionId(provider: AgentProvider, storedSessionId: string
 }
 
 export function getProviderModel(provider: AgentProvider): string | undefined {
-  if (provider === "codex") return DEFAULT_MODEL;
+  if (provider === "codex") return undefined;
   return CLAUDE_MODEL || undefined;
 }
 
@@ -83,11 +82,9 @@ export async function createTopLevelCodexTask(args: {
   sourceThreadTs: string;
 }): Promise<{ threadId: string; turnId: string }> {
   const threadId = await codexAppServer.openThread({
-    model: DEFAULT_MODEL,
     cwd: args.cwd,
     sandbox: getSandboxMode(),
     approvalPolicy: getApprovalPolicy(),
-    effort: getModelReasoningEffort(),
   });
   const turn = await codexAppServer.startTurn(
     threadId,
@@ -159,11 +156,6 @@ function getSandboxMode(): SandboxMode {
 function getApprovalPolicy(): ApprovalMode {
   const policy = process.env.CODEX_APPROVAL_POLICY as ApprovalMode | undefined;
   return policy && VALID_APPROVAL_MODES.has(policy) ? policy : "never";
-}
-
-function getModelReasoningEffort(): ModelReasoningEffort | undefined {
-  const effort = CODEX_MODEL_REASONING_EFFORT as ModelReasoningEffort | undefined;
-  return effort && VALID_REASONING_EFFORTS.has(effort) ? effort : undefined;
 }
 
 function humanizeIdentifier(value: string): string {
@@ -295,11 +287,9 @@ function appServerCompletedStatus(item: AppServerThreadItem): "complete" | "erro
 
 async function runCodexQuery(args: RunAgentArgs): Promise<string> {
   const threadOptions = {
-    model: DEFAULT_MODEL,
     cwd: args.cwd,
     sandbox: getSandboxMode(),
     approvalPolicy: getApprovalPolicy(),
-    effort: getModelReasoningEffort(),
   };
   const sessionId = await codexAppServer.openThread({
     existingThreadId: args.existingSessionId,

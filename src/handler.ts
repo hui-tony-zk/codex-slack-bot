@@ -1,5 +1,6 @@
 import { createTopLevelCodexTask, decodeSessionId, encodeSessionId, getProviderModel, runAgentQuery, steerAgentQuery } from "./agents.js";
 import type { AgentProvider, BuiltPrompt, ToolTrace } from "./agents.js";
+import { isChannelUserAllowed } from "./access-control.js";
 import { extractCodexTaskRequests } from "./codex-task-directive.js";
 import { AGENT_PROVIDER, DEFAULT_CWD, MAX_ERROR_DETAIL_CHARS } from "./config.js";
 import { handleCommand } from "./commands.js";
@@ -18,7 +19,7 @@ async function buildPrompt(
   botUserId: string | undefined,
   includeThreadContext = true,
 ): Promise<BuiltPrompt> {
-  // Images are model inputs; video and audio remain local for tool-based processing.
+  // Images are model inputs; video, audio, and PDFs remain local for tool-based processing.
   const attachmentNotes: string[] = [];
   let imagePaths: string[] = [];
   let audioPaths: string[] = [];
@@ -57,6 +58,15 @@ async function buildPrompt(
         );
         logThread(threadTs, "Downloaded audio attachments", { count: audioPaths.length, paths: audioPaths });
       }
+      if (downloaded.documentPaths.length > 0) {
+        attachmentNotes.push(
+          `The user attached ${downloaded.documentPaths.length} PDF document(s), downloaded to local paths:\n${downloaded.documentPaths.map((p) => `- ${p}`).join("\n")}\nInspect and parse each PDF as needed for the user's request.`,
+        );
+        logThread(threadTs, "Downloaded PDF attachments", {
+          count: downloaded.documentPaths.length,
+          paths: downloaded.documentPaths,
+        });
+      }
     }
   }
   const attachmentNote = attachmentNotes.length ? `\n\n${attachmentNotes.join("\n\n")}` : "";
@@ -90,6 +100,15 @@ export function createMessageHandler(app: SlackApp, state: StateStore) {
     const user = event.user;
     const botUserId = body?.authorizations?.find((authorization) => authorization.user_id)?.user_id
       || event.text.match(/<@([A-Z0-9]+)>/)?.[1];
+
+    if (!isChannelUserAllowed(event.channel, user)) {
+      logThread(threadTs, "Ignored message blocked by channel user allowlist", {
+        user,
+        channel: event.channel,
+        slackTs: event.ts,
+      });
+      return;
+    }
 
     logThread(threadTs, "Incoming user message", {
       user,
