@@ -40,6 +40,12 @@ export function formatElapsedMs(ms: number): string {
 }
 
 export function formatResultBlocks(text: string): unknown[] {
+  if (!text.trim()) return formatTextBlocks("");
+  if (text.length <= 12_000) return [{ type: "markdown", text }];
+  return formatTextBlocks(text);
+}
+
+function formatTextBlocks(text: string): unknown[] {
   if (!text) return [{ type: "section", text: { type: "mrkdwn", text: "(no output)" } }];
 
   const converted = markdownToSlack(text);
